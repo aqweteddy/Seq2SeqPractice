@@ -1,0 +1,6 @@
+model/*
+*.ckpt
+*/tfboard_*/
+*.json
+*.csv
+__py*/
