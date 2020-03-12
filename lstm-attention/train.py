@@ -10,7 +10,7 @@ from tqdm import tqdm
 from transformers import BertTokenizer
 
 from dataset import PttDataset
-from model import AttnDecoder, Encoder
+from model import Seq2Seq
 
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -19,21 +19,22 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class Seq2SeqTrainer:
     def __init__(self, tokenizer,
-                 batch_size=64,
+                 embed_size=256,
                  hidden_size=256,
-                 maxlen=512,
-                 com_maxlen=30,
+                 n_layers=1,
                  lr=2e-5,
+                 dropout=0.5,
                  tf_board_dir='./tfboard_log'
                  ):
         # tokenizer
         self.tokenizer = tokenizer
 
         # model
-        self.encoder = Encoder(
-            len(tokenizer), hidden_size=hidden_size).to(DEVICE)
-        self.decoder = AttnDecoder(hidden_size=hidden_size, output_size=len(
-            tokenizer), dropout_p=0.1, max_length=maxlen).to(DEVICE)
+        self.model = Seq2Seq(len(self.tokenizer),
+                             hidden_size,
+                             embed_size,
+                             n_layers=n_layers,
+                             dropout=dropout).to(DEVICE)
 
         # tfboard & log
         self.writer = SummaryWriter(tf_board_dir)
@@ -41,146 +42,67 @@ class Seq2SeqTrainer:
         # self.log.setLevel(logging.INFO)
 
         # parameters
-        self.batch_size = batch_size
         self.hidden_size = hidden_size
-        self.maxlen = maxlen
-        self.com_maxlen=com_maxlen
+        self.embed_size = embed_size
 
         # optimizer & criterion
-        self.criterion = nn.NLLLoss()
-        self.encoder_opt = torch.optim.Adam(self.encoder.parameters(), lr=lr)
-        self.decoder_opt = torch.optim.Adam(self.decoder.parameters(), lr=lr)
+        self.criterion = nn.CrossEntropyLoss()
+        self.optimizer = torch.optim.Adam(
+            self.model.parameters(), lr=lr)
         # self.encoder_opt = torch.optim.SGD(self.encoder.parameters(), lr=lr)
         # self.decoder_opt = torch.optim.SGD(self.decoder.parameters(), lr=lr)
 
     def save_model(self, filename, step=None):
-        torch.save(self.encoder.state_dict(),
-                   f'{filename}{"step" + str(step) if step else "model"}_encoder.ckpt')
-        torch.save(self.decoder.state_dict(),
-                   f'{filename}{"step" + str(step) if step else "model"}_decoder.ckpt')
+        torch.save(self.model.state_dict(),
+                   f'{filename}{"step" + str(step) if step else "model"}.ckpt')
 
-    def train(self, train_loader,
+    def train(self,
+              train_loader,
               test_loader=None,
               test_batch_size=2,
               test_step=1000,
               epochs=10,
               teacher_ratio=0.5,
-              save_ckpt_step=2,
+              save_ckpt_step=20,
               path='./ckpt/'):
         global_step = 0
-
         for epoch in range(epochs):
             tot_loss = 0
-            for n, batch in enumerate(tqdm(train_loader, desc=f'Epoch {epoch+1} / {epochs}: ')):
+            pbar = tqdm(train_loader)
+            for n, batch in enumerate(pbar):
+                pbar.set_description(f'Epoch {epoch+1} / {epochs}: ')
                 text, com, tag = batch
-                # MAXLEN * BATCH_SIZE
-                text = text.to(DEVICE)
-                com = com.to(DEVICE)
-                tag = tag.to(DEVICE)
-                text = torch.transpose(text, 1, 0)
-                com = torch.transpose(com, 1, 0)
-                loss, topis = self.__train_one(text, com, tag, teacher_ratio)
+                # MAXLEN
+                text, com, tag = text.to(DEVICE), com.to(
+                    DEVICE), tag.to(DEVICE)
+
+                loss, preds = self.__train_one(text, com, tag, teacher_ratio)
                 tot_loss += loss
                 self.writer.add_scalar(
                     f'train/loss', loss, global_step=global_step+1)
                 self.writer.flush()
 
-                if (global_step + 1) % 100 == 0:
-                    self.log.warning(f'topi {topis}')
-                if (global_step + 1) % save_ckpt_step == 0:
-                    self.save_model(path, global_step)
+                # if (global_step + 1) % save_ckpt_step == 0:
+                #     self.save_model(path, global_step)
                 global_step += 1
-
-                if test_loader and (global_step+1) % test_step == 0:
-                    for batch in test_loader:
-                        text, com, tag = batch
-                        # MAXLEN * BATCH_SIZE
-                        text = text.to(DEVICE).view(-1, test_batch_size)
-                        com = com.to(DEVICE).view(-1, test_batch_size)
-                        tag = tag.to(DEVICE)
-                        ev = self.__eval_one_batch(text, com, tag, test_batch_size)
-                        break
-                    for idx, s in enumerate(ev):
-                        self.writer.add_text(
-                            f"sample{idx}", s, global_step=global_step+1)
-                    self.writer.flush()
-
+            pbar.close()
+            self.writer.add_text('TrainOutput',
+                                 self.tokenizer.decode(preds[0]),
+                                 global_step=global_step+1)
             self.log.warning(f"loss: {tot_loss / n}")
             self.save_model(path, global_step)
 
     def __train_one(self, text, com, tag, teacher_ratio):
-        self.encoder.train()
-        self.decoder.train()
+        self.model.train()
+        outputs, preds = self.model(text, com, tag, teacher_ratio)
 
-        encoder_hidden = torch.zeros(
-            1, self.batch_size, self.hidden_size).to(DEVICE)
-        self.encoder_opt.zero_grad()
-        self.decoder_opt.zero_grad()
-        loss = 0
-
-        #! Encoder
-        encoder_outputs = torch.zeros(
-            self.maxlen, self.hidden_size, device=DEVICE)
-        for ei in range(self.maxlen):
-            output, encoder_hidden = self.encoder(text[ei], encoder_hidden)
-            encoder_outputs[ei] = output[0, 0]
-
-        #! Decoder
-        use_teacher_forcing = True if random.random() < teacher_ratio else False
-        decoder_input = com[0]
-        hidden = encoder_hidden
-        topis = []
-
-        if use_teacher_forcing:
-            for di in range(1, self.com_maxlen):
-                # BATCH * 21128
-                output, hidden, atten = self.decoder(
-                    decoder_input, hidden, encoder_outputs)
-                
-                loss += self.criterion(output, com[di])
-                decoder_input = com[di]  # teacher forcing
-        else:
-            for di in range(1, self.com_maxlen):
-                output, hidden, atten = self.decoder(
-                    decoder_input, hidden, encoder_outputs)
-                loss += self.criterion(output, com[di])
-
-                topv, topi = output.topk(1)
-                topis.append(topi[0].detach().cpu().numpy())
-                decoder_input = topi.squeeze().detach()
-
-        #! loss & optimizer
+        # print(outputs.size(), com.size())
+        loss = self.criterion(outputs.transpose(1, 2), com)
+        self.optimizer.zero_grad()
         loss.backward()
-        self.encoder_opt.step()
-        self.decoder_opt.step()
-        return loss.item() / self.com_maxlen, topis
+        self.optimizer.step()
 
-    def __eval_one_batch(self, text, com, tag, test_batch_size=2):
-        self.encoder.eval()
-        self.decoder.eval()
-        with torch.no_grad():
-            encoder_hidden = torch.zeros(
-                1, test_batch_size, self.hidden_size).to(DEVICE)
-            encoder_outputs = torch.zeros(
-                self.maxlen, self.hidden_size, device=DEVICE)
-            for ei in range(self.maxlen):
-                output, encoder_hidden = self.encoder(text[ei], encoder_hidden)
-                encoder_outputs[ei] = output[0, 0]
-
-            decoder_input = com[0]
-
-            decoder_hidden = encoder_hidden
-            output_sent = [[] for i in range(test_batch_size)]
-            for di in range(self.com_maxlen):
-                decoder_output, decoder_hidden, decoder_attention = self.decoder(
-                    decoder_input, decoder_hidden, encoder_outputs)
-                topv, topi = decoder_output.data.topk(1)
-                for i, top in enumerate(topi.detach().cpu().numpy()):
-                    if top not in self.tokenizer.all_special_ids:
-                        output_sent[i].append(top)
-
-            output_sent = [self.tokenizer.decode(sent) for sent in output_sent]
-        return output_sent
+        return loss.item(), preds
 
     def __filter_special_tokens(self, token_list):
         return [token for token in token_list if token not in self.tokenizer.all_special_tokens]
@@ -190,6 +112,7 @@ if __name__ == '__main__':
     import pandas as pd
     TRAIN_SET = 30000
     BATCH_SIZE = 64
+    EMBED_SIZE = 512
     HIDDEN_SIZE = 256
     MAXLEN = 512
     # print("loading data...")
@@ -207,9 +130,19 @@ if __name__ == '__main__':
     print(f"dct size: {ds.get_dct_size()}")
 
     trainer = Seq2SeqTrainer(BertTokenizer.from_pretrained('../model/roberta'),
-                             batch_size=BATCH_SIZE, hidden_size=HIDDEN_SIZE, com_maxlen=30, maxlen=MAXLEN, lr=2e-5)
+                             embed_size=EMBED_SIZE,
+                             hidden_size=HIDDEN_SIZE,
+                             n_layers=3,
+                             lr=2e-5,
+                             dropout=0.5
+                             )
 
-    trainer.train(train_loader=train_loader, test_loader=test_loader, test_step=100,
-                  test_batch_size=2, epochs=10, teacher_ratio=0.65, save_ckpt_step=200)
+    trainer.train(train_loader=train_loader,
+                  test_loader=None,
+                  test_step=100,
+                  test_batch_size=2,
+                  epochs=100,
+                  teacher_ratio=0.5,
+                  save_ckpt_step=200)
 
     trainer.writer.close()

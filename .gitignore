@@ -4,3 +4,4 @@ model/*
 *.json
 *.csv
 __py*/
+*.out
