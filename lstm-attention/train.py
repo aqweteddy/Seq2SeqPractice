@@ -1,5 +1,6 @@
 import random
 import logging
+import json
 import os
 
 import torch
@@ -42,21 +43,16 @@ class Seq2SeqTrainer:
         # self.log.setLevel(logging.INFO)
         self.log.warning(f'CUDA count: {torch.cuda.device_count()}')
 
-
         # parameters
         self.hidden_size = hidden_size
         self.embed_size = embed_size
 
         # optimizer & criterion
-        parameters_num = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        parameters_num = sum(p.numel()
+                             for p in self.model.parameters() if p.requires_grad)
         self.criterion = nn.CrossEntropyLoss(ignore_index=0)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
         self.log.warning(f'trainable parameters: {parameters_num}')
-
-    def save_model(self, filename):
-        
-        torch.save(self.model.module.state_dict(),
-                   f'{filename}')
 
     def train(self,
               train_loader,
@@ -68,6 +64,8 @@ class Seq2SeqTrainer:
               save_ckpt_step=20,
               path='./model/'):
         global_step = 0
+        self.save_config(os.path.join(path, 'config.json'))
+
         for epoch in range(epochs):
             tot_loss = 0
             pbar = tqdm(train_loader)
@@ -88,18 +86,30 @@ class Seq2SeqTrainer:
                     preds = preds.detach().cpu().tolist()
                     output = f"title:{''.join(self.tokenizer.decode(title[2]))}\ntext: {''.join(self.tokenizer.decode(text[2]))}\npred:{''.join(self.tokenizer.decode(preds[2]))} "
                     self.writer.add_text('TrainOutput',
-                                 output,
-                                 global_step=global_step+1)
+                                         output,
+                                         global_step=global_step+1)
 
                 # if (global_step + 1) % save_ckpt_step == 0:
                 #     self.save_model(path, global_step)
                 global_step += 1
             pbar.close()
-            
-            
+
             self.log.warning(f"loss: {tot_loss / n}")
             self.save_model(f'{os.path.join(path, str(epoch+1))}.ckpt')
-    
+
+    def save_model(self, filename):
+        torch.save(self.model.module.state_dict(),
+                   f'{filename}')
+
+    def save_config(self, filename):
+        with open(filename, 'w') as f:
+            json.dump(dict(embed_size=self.embed_size,
+                           hidden_size=self.hidden_size,
+                           n_layers=self.n_layers,
+                           lr=self.lr,
+                           dropout=self.dropout
+                           ), f)
+
     @staticmethod
     def init_weights(m):
         for name, param in m.named_parameters():
@@ -112,8 +122,8 @@ class Seq2SeqTrainer:
         self.model.train()
         # output: batch_size, title_len, dic_len
         outputs, preds = self.model(text, title, teacher_ratio)
-        outputs = outputs.reshape(-1, len(self.tokenizer)) 
-        title = title.reshape(-1) 
+        outputs = outputs.reshape(-1, len(self.tokenizer))
+        title = title.reshape(-1)
         # print(outputs.shape, title.shape)
         loss = self.criterion(outputs, title).mean()
 
@@ -123,7 +133,7 @@ class Seq2SeqTrainer:
         self.optimizer.step()
 
         return loss.item(), preds
-    
+
     def evaluate(self, loader):
         self.model.eval()
         loss = 0
@@ -132,10 +142,11 @@ class Seq2SeqTrainer:
             text, title = batch
             outputs, preds = self.model(text, title, 0)
             # self.log.warning(preds.shape)
-            outputs = outputs[1:].view(-1, len(self.tokenizer)) # outputs: target_size - 1, batch_size, dct_size
-            title = title[1:].view(-1) # [(target_size-1) * batch_size]
+            # outputs: target_size - 1, batch_size, dct_size
+            outputs = outputs[1:].view(-1, len(self.tokenizer))
+            title = title[1:].view(-1)  # [(target_size-1) * batch_size]
             loss += criterion(outputs, title).item()
-        
+
         return loss / len(loader)
 
     def __filter_special_tokens(self, token_list):

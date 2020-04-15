@@ -136,9 +136,11 @@ class Seq2Seq(nn.Module):
                  hidden_size,
                  embed_size,
                  n_layers=1,
-                 dropout=0.5
+                 dropout=0.5,
+                 device='cuda'
                  ):
         super(Seq2Seq, self).__init__()
+        self.device = device
         self.dct_size = dct_size  # input and output
         self.hidden_size = hidden_size  # gru
         self.embed_size = embed_size  # embedding
@@ -198,7 +200,7 @@ class Seq2Seq(nn.Module):
         topk = 2
         beam_width = 10
         # Start with the start of the sentence token
-        decoder_input = torch.LongTensor([1]).cuda()
+        decoder_input = torch.LongTensor([1]).to(self.device)
         # Number of sentence to generate
         endnodes = []
         number_required = min((topk + 1), topk - len(endnodes))

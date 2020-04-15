@@ -1,6 +1,7 @@
 import random
 import logging
 import os
+import json
 from typing import List
 
 import torch
@@ -15,22 +16,30 @@ from transformers import BertTokenizer
 
 
 class Inference:
-    def __init__(self, tokenizer, model_path,
+    def __init__(self, tokenizer, model_path, config_file=None,
                  embed_size=256,
                  hidden_size=256,
                  n_layers=3,
                  device='cuda'
                  ):
         self.tokenizer = tokenizer
-        self.embed_size = embed_size
-        self.hidden_size = hidden_size
-        self.n_layers = n_layers
         self.device = device
+        if config_file:
+            with open(config_file, 'r') as f:
+                config = json.load(f)
+                self.embed_size = config['embed_size']
+                self.hidden_size = config['hidden_size']
+                self.n_layers = config['n_layers']
+        else:
+            self.embed_size = embed_size
+            self.hidden_size = hidden_size
+            self.n_layers = n_layers
 
         self.model = Seq2Seq(len(self.tokenizer),
                              hidden_size,
                              embed_size,
                              n_layers=n_layers,
+                             device=device
                              )
         self.model.load_state_dict(torch.load(model_path))
         self.model.to(self.device)
@@ -48,8 +57,7 @@ class Inference:
 
     def decode(self, code:List[int]):
         code = [int(c.detach().cpu().numpy()) for c in code]
-        print(code)
-        result = self.tokenizer.decode(code)
+        result = self.tokenizer.decode(code, remove_special_token=True)
         return result
 
     def encode(self, doc, maxlen):
@@ -64,6 +72,6 @@ class Inference:
         return code
 
 if __name__ == "__main__":
-    inf = Inference(tokenizer=Vocab.from_pretrained('./model/vocab.txt'), model_path='model/100.ckpt')
+    inf = Inference(tokenizer=Vocab.from_pretrained('./model/vocab.txt'), model_path='model/30.ckpt', device='cuda')
     print(inf.infer(['謝謝各位大大幫忙高調與置頂 目前已找到影像，稍晚會進行刪文感謝各位', 
                     '徵求說明：朋友為開計程車 與今早上與一小孩造成交通事故，小孩當時手發生骨折，目前缺少影像釐清雙方責任，麻煩各位幫忙協詢，謝謝']))
