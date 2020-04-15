@@ -29,6 +29,13 @@ class Seq2SeqTrainer:
         # tokenizer
         self.tokenizer = tokenizer
 
+        # Arguments
+        self.embed_size = embed_size
+        self.hidden_size = hidden_size
+        self.n_layers = n_layers
+        self.lr = lr
+        self.dropout = dropout
+
         # model
         self.model = Seq2Seq(len(self.tokenizer),
                              hidden_size,
@@ -173,15 +180,15 @@ if __name__ == '__main__':
                              hidden_size=HIDDEN_SIZE,
                              n_layers=3,
                              lr=1e-4,
-                             dropout=0.3
+                             dropout=0.5
                              )
 
     trainer.train(train_loader=train_loader,
                   test_loader=None,
                   test_step=100,
                   test_batch_size=2,
-                  epochs=100,
-                  teacher_ratio=0.5,
+                  epochs=40,
+                  teacher_ratio=0.5, 
                   save_ckpt_step=200)
 
     trainer.writer.close()
