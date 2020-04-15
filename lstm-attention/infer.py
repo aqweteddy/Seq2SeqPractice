@@ -18,8 +18,8 @@ class Inference:
     def __init__(self, tokenizer, model_path,
                  embed_size=256,
                  hidden_size=256,
-                 n_layers=1,
-                 device='gpu'
+                 n_layers=3,
+                 device='cuda'
                  ):
         self.tokenizer = tokenizer
         self.embed_size = embed_size
@@ -32,16 +32,23 @@ class Inference:
                              embed_size,
                              n_layers=n_layers,
                              )
-        
-        self.model = self.model.load_state_dict(torch.load(model_path)).to(self.device)
+        self.model.load_state_dict(torch.load(model_path))
+        self.model.to(self.device)
         self.model.eval()
-        
+
+        # self.model.eval()
+
     def infer(self, src: List[str], maxlen=512):
         src = [self.encode(s, maxlen) for s in src]
-        src = torch.tensor(src) # [B, maxlen]
+        src = torch.tensor(src).to(self.device) # [B, maxlen]
 
         preds = self.model.infer(src) # [B, output_maxlen]
+        preds = [self.decode(pred) for pred in preds]
+        return preds
 
+    def decode(self, code:List[int]):
+        result = self.tokenizer.decode(code)
+        return result
 
     def encode(self, doc, maxlen):
         code = self.tokenizer.encode(doc)
@@ -54,3 +61,7 @@ class Inference:
         assert len(code) == maxlen
         return code
 
+if __name__ == "__main__":
+    inf = Inference(tokenizer=Vocab.from_pretrained('./model/vocab.txt'), model_path='model/100.ckpt')
+    print(inf.infer(['謝謝各位大大幫忙高調與置頂 目前已找到影像，稍晚會進行刪文感謝各位', 
+                    '徵求說明：朋友為開計程車 與今早上與一小孩造成交通事故，小孩當時手發生骨折，目前缺少影像釐清雙方責任，麻煩各位幫忙協詢，謝謝']))

@@ -4,6 +4,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from beam import BeamSearchNode
+from queue import PriorityQueue
+
+
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
@@ -112,7 +116,7 @@ class Decoder(nn.Module):
         gru_input = torch.cat((embed, weighted), dim=2)
 
         self.gru.flatten_parameters()
-        output, hidden = self.gru(gru_input, hidden)
+        output, hidden = self.gru(gru_input.contiguous(), hidden.contiguous())
         # output: [1, batch_size, hidden_size]
         # hidden: [n_layer, batch_size, hidden_size]
 
@@ -145,7 +149,8 @@ class Seq2Seq(nn.Module):
                                dct_size, n_layers, dropout)
 
     def create_mask(self, src):
-        return (src != 0).permute(1, 0)  # mask 0 padding
+        mask = ((src != 0) & (src != 3)).permute(1, 0)  # mask 0 unk, 3 pad
+        return mask
 
     def forward(self, src, target, teacher_ratio=0.5):
         src, target = src.T, target.T
@@ -161,8 +166,6 @@ class Seq2Seq(nn.Module):
         preds = torch.zeros(batch_size, target_size).cuda()
         inp = target[0, :]
 
-        self.inp_backup = inp
-
         for i in range(0, target_size-1):
             output, hidden = self.decoder(inp, hidden, encoder_outputs, mask)
             outputs[:, i, :] = output  # output: [batch_size, i, dct_size]
@@ -173,13 +176,99 @@ class Seq2Seq(nn.Module):
             inp = target[i+1] if teacher_force else top1
         return outputs, preds
 
-    def infer(self, src, topk=3):
+    def infer(self, src, maxlen=30, topk=3):
         """infer
 
         Arguments:
             src  -- [batch, src_len]
         """
+        src = src.T
+        batch_size = src.shape[1]
+        hidden, encoder_outputs = self.encoder(src)
 
-    
-    def beam_search(src, topk):
-        pass
+        # for each sentence
+        result = []
+        for idx in range(batch_size):
+            result.append(self.beam_search(src[:,idx].unsqueeze(1) , hidden[:, idx,:].unsqueeze(1), encoder_outputs[:, idx, :].unsqueeze(1)))
+
+    def beam_search(self, src, decoder_hidden, encoder_output):
+        # encoder_output = encoder_outputs[:,idx, :].unsqueeze(1)
+        print(f'src_shape: {src.shape}')
+        print(f'decoder_hidden: {decoder_hidden.shape}')
+        print(f'encoder_output: {encoder_output.shape}')
+        topk = 2
+        beam_width = 10
+        # Start with the start of the sentence token
+        decoder_input = torch.LongTensor([1]).cuda()
+        # Number of sentence to generate
+        endnodes = []
+        number_required = min((topk + 1), topk - len(endnodes))
+
+        # starting node -  hidden vector, previous node, word id, logp, length
+        node = BeamSearchNode(decoder_hidden, None, decoder_input, 0, 1)
+        nodes = PriorityQueue()
+
+        # start the queue
+        nodes.put((-node.eval(), node))
+        qsize = 1
+
+        # start beam search
+        while True:
+            # give up when decoding takes too long
+            if qsize > 2000: break
+
+            # fetch the best node
+            score, n = nodes.get()
+            decoder_input = n.wordid
+            decoder_hidden = n.h
+
+            if n.wordid.item() == 2 and n.prevNode:
+                endnodes.append((score, n))
+                # if we reached maximum # of sentences required
+                if len(endnodes) >= number_required:
+                    break
+                else:
+                    continue
+
+            # decode for one step using decoder
+            print(f"decoder_input: {decoder_input.shape}")#!ok
+            print(f"decoder_hidden: {decoder_hidden.shape}")#!
+            print(f"encoder_output: {encoder_output.shape}") #! ok
+
+            decoder_output, decoder_hidden = self.decoder(decoder_input, decoder_hidden, encoder_output, self.create_mask(src))
+
+            # PUT HERE REAL BEAM SEARCH OF TOP
+            log_prob, indexes = torch.topk(decoder_output, beam_width)
+            nextnodes = []
+
+            for new_k in range(beam_width):
+                decoded_t = indexes[0][new_k].view(1)
+                log_p = log_prob[0][new_k].item()
+
+                node = BeamSearchNode(decoder_hidden, n, decoded_t, n.logp + log_p, n.leng + 1)
+                score = -node.eval()
+                nextnodes.append((score, node))
+
+            # put them into queue
+            for i in range(len(nextnodes)):
+                score, nn = nextnodes[i]
+                nodes.put((score, nn))
+                # increase qsize
+            qsize += len(nextnodes) - 1
+
+        # choose nbest paths, back trace them
+        if len(endnodes) == 0:
+            endnodes = [nodes.get() for _ in range(topk)]
+
+        utterances = []
+        for score, n in sorted(endnodes, key=operator.itemgetter(0)):
+            utterance = []
+            utterance.append(n.wordid)
+            # back trace
+            while n.prevNode != None:
+                n = n.prevNode
+                utterance.append(n.wordid)
+
+            utterance = utterance[::-1]
+            utterances.append(utterance)
+        return utterances

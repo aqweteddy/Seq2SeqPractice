@@ -54,6 +54,7 @@ class Seq2SeqTrainer:
         self.log.warning(f'trainable parameters: {parameters_num}')
 
     def save_model(self, filename):
+        
         torch.save(self.model.module.state_dict(),
                    f'{filename}')
 
