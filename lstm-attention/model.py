@@ -1,4 +1,5 @@
 import random
+import operator
 
 import torch
 import torch.nn as nn
@@ -190,12 +191,10 @@ class Seq2Seq(nn.Module):
         result = []
         for idx in range(batch_size):
             result.append(self.beam_search(src[:,idx].unsqueeze(1) , hidden[:, idx,:].unsqueeze(1), encoder_outputs[:, idx, :].unsqueeze(1)))
+        return result
 
     def beam_search(self, src, decoder_hidden, encoder_output):
         # encoder_output = encoder_outputs[:,idx, :].unsqueeze(1)
-        print(f'src_shape: {src.shape}')
-        print(f'decoder_hidden: {decoder_hidden.shape}')
-        print(f'encoder_output: {encoder_output.shape}')
         topk = 2
         beam_width = 10
         # Start with the start of the sentence token
@@ -231,11 +230,8 @@ class Seq2Seq(nn.Module):
                     continue
 
             # decode for one step using decoder
-            print(f"decoder_input: {decoder_input.shape}")#!ok
-            print(f"decoder_hidden: {decoder_hidden.shape}")#!
-            print(f"encoder_output: {encoder_output.shape}") #! ok
-
-            decoder_output, decoder_hidden = self.decoder(decoder_input, decoder_hidden, encoder_output, self.create_mask(src))
+            with torch.no_grad():
+                decoder_output, decoder_hidden = self.decoder(decoder_input, decoder_hidden, encoder_output, self.create_mask(src))
 
             # PUT HERE REAL BEAM SEARCH OF TOP
             log_prob, indexes = torch.topk(decoder_output, beam_width)

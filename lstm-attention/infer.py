@@ -43,10 +43,12 @@ class Inference:
         src = torch.tensor(src).to(self.device) # [B, maxlen]
 
         preds = self.model.infer(src) # [B, output_maxlen]
-        preds = [self.decode(pred) for pred in preds]
+        preds = [self.decode(p) for pred in preds for p in pred]
         return preds
 
     def decode(self, code:List[int]):
+        code = [int(c.detach().cpu().numpy()) for c in code]
+        print(code)
         result = self.tokenizer.decode(code)
         return result
 
