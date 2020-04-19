@@ -14,14 +14,15 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class Encoder(nn.Module):
     def __init__(self,
+                 embedding,
                  dct_size,
                  embed_size,
                  hidden_size,
                  n_layers,
                  dropout=0.5):
         super(Encoder, self).__init__()
-
-        self.embedding = nn.Embedding(dct_size, embed_size)
+        self.embedding = embedding
+        # self.embedding = nn.Embedding(dct_size, embed_size)
         self.gru = nn.GRU(embed_size, hidden_size, n_layers,
                           bidirectional=True)
         self.n_layers = n_layers
@@ -74,13 +75,14 @@ class Attention(nn.Module):
 
 
 class Decoder(nn.Module):
-    def __init__(self, embed_size, hidden_size, output_size, n_layers, dropout=0.1):
+    def __init__(self, embedding, embed_size, hidden_size, output_size, n_layers, dropout=0.1):
         super(Decoder, self).__init__()
         self.embed_size = embed_size
         self.hidden_size = hidden_size
         self.output_size = output_size
 
-        self.embedding = nn.Embedding(int(output_size), embed_size)
+        # self.embedding = nn.Embedding(int(output_size), embed_size)
+        self.embedding = embedding
         self.attention = Attention(hidden_size, hidden_size)
 
         self.gru = nn.GRU(embed_size + hidden_size * 2, hidden_size, n_layers)
@@ -137,7 +139,8 @@ class Seq2Seq(nn.Module):
                  embed_size,
                  n_layers=1,
                  dropout=0.5,
-                 device='cuda'
+                 device='cuda',
+                 shared_embedding=True,
                  ):
         super(Seq2Seq, self).__init__()
         self.device = device
@@ -146,10 +149,18 @@ class Seq2Seq(nn.Module):
         self.embed_size = embed_size  # embedding
         self.n_layers = n_layers  # GRU layers
         self.dropout = dropout
-        self.encoder = Encoder(dct_size, embed_size,
-                               hidden_size, n_layers, dropout)
-        self.decoder = Decoder(embed_size, hidden_size,  # bidirectional GRU encoder
-                               dct_size, n_layers, dropout)
+
+        self.shared_embed = nn.Embedding(
+            dct_size, embed_size)  # shared embedding
+        self.encoder = Encoder(self.shared_embed, dct_size, embed_size,
+                                hidden_size, n_layers, dropout)
+        self.decoder = Decoder(self.shared_embed, embed_size, hidden_size,  # bidirectional GRU encoder
+                                dct_size, n_layers, dropout)
+        # else:
+        #     self.encoder = Encoder(nn.Embedding(dct_size, embed_size), dct_size, embed_size,
+        #                            hidden_size, n_layers, dropout)
+        #     self.decoder = Decoder(nn.Embedding(dct_size, embed_size), embed_size, hidden_size,  # bidirectional GRU encoder
+        #                            dct_size, n_layers, dropout)
 
     def create_mask(self, src):
         mask = ((src != 0) & (src != 3)).permute(1, 0)  # mask 0 unk, 3 pad
@@ -169,14 +180,14 @@ class Seq2Seq(nn.Module):
         preds = torch.zeros(batch_size, target_size).cuda()
         inp = target[0, :]
 
-        for i in range(0, target_size-1):
+        for i in range(1, target_size):
             output, hidden = self.decoder(inp, hidden, encoder_outputs, mask)
-            outputs[:, i, :] = output  # output: [batch_size, i, dct_size]
+            outputs[:, i - 1, :] = output  # output: [batch_size, i, dct_size]
             teacher_force = random.random() < teacher_ratio
             top1 = output.argmax(1)
-            preds[:, i] = top1
+            preds[:, i - 1] = top1
             # preds.append(top1.item())
-            inp = target[i+1] if teacher_force else top1
+            inp = target[i] if teacher_force else top1
         return outputs, preds
 
     def infer(self, src, maxlen=30, topk=3):
@@ -192,12 +203,13 @@ class Seq2Seq(nn.Module):
         # for each sentence
         result = []
         for idx in range(batch_size):
-            result.append(self.beam_search(src[:,idx].unsqueeze(1) , hidden[:, idx,:].unsqueeze(1), encoder_outputs[:, idx, :].unsqueeze(1)))
+            result.append(self.beam_search(src[:, idx].unsqueeze(
+                1), hidden[:, idx, :].unsqueeze(1), encoder_outputs[:, idx, :].unsqueeze(1)))
         return result
 
     def beam_search(self, src, decoder_hidden, encoder_output):
         # encoder_output = encoder_outputs[:,idx, :].unsqueeze(1)
-        topk = 2
+        topk = 3
         beam_width = 10
         # Start with the start of the sentence token
         decoder_input = torch.LongTensor([1]).to(self.device)
@@ -216,7 +228,8 @@ class Seq2Seq(nn.Module):
         # start beam search
         while True:
             # give up when decoding takes too long
-            if qsize > 2000: break
+            if qsize > 2000:
+                break
 
             # fetch the best node
             score, n = nodes.get()
@@ -233,7 +246,8 @@ class Seq2Seq(nn.Module):
 
             # decode for one step using decoder
             with torch.no_grad():
-                decoder_output, decoder_hidden = self.decoder(decoder_input, decoder_hidden, encoder_output, self.create_mask(src))
+                decoder_output, decoder_hidden = self.decoder(
+                    decoder_input, decoder_hidden, encoder_output, self.create_mask(src))
 
             # PUT HERE REAL BEAM SEARCH OF TOP
             log_prob, indexes = torch.topk(decoder_output, beam_width)
@@ -243,7 +257,8 @@ class Seq2Seq(nn.Module):
                 decoded_t = indexes[0][new_k].view(1)
                 log_p = log_prob[0][new_k].item()
 
-                node = BeamSearchNode(decoder_hidden, n, decoded_t, n.logp + log_p, n.leng + 1)
+                node = BeamSearchNode(
+                    decoder_hidden, n, decoded_t, n.logp + log_p, n.leng + 1)
                 score = -node.eval()
                 nextnodes.append((score, node))
 

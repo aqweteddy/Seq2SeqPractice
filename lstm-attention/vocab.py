@@ -55,7 +55,7 @@ class Vocab:
                     return False
         return True if len(word) <= 5 else False
 
-    def add_word(self, word: str, ignore_filter=True):
+    def add_word(self, word: str, ignore_filter=False):
         if not self.word_filter(word) and not ignore_filter:
             return
         if word not in self.word2idx.keys():
@@ -87,7 +87,7 @@ class Vocab:
         result = []
         for idx in idx_list:
             if not remove_special_token or not idx in [self.eos_id, self.bos_id, self.pad_token_id, self.unk_id]:
-                result.append(self.idx2word.get(idx, ''))
+                result.append(self.idx2word.get(idx, ' '))
         return result
 
     def re_index(self):

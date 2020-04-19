@@ -58,7 +58,7 @@ class Seq2SeqTrainer:
         parameters_num = sum(p.numel()
                              for p in self.model.parameters() if p.requires_grad)
         self.criterion = nn.CrossEntropyLoss(ignore_index=0)
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
+        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr)
         self.log.warning(f'trainable parameters: {parameters_num}')
 
     def train(self,
@@ -80,7 +80,8 @@ class Seq2SeqTrainer:
                 pbar.set_description(f'Epoch {epoch+1} / {epochs}: ')
                 text, title = batch
                 text, title = text.cuda(), title.cuda()
-                loss, preds = self.__train_one(text, title, teacher_ratio)
+                loss, preds = self.__train_one(
+                    text, title, self.__get_teacher_ratio(teacher_ratio, epoch, epochs))
 
                 tot_loss += loss
                 self.writer.add_scalar(
@@ -103,6 +104,10 @@ class Seq2SeqTrainer:
 
             self.log.warning(f"loss: {tot_loss / n}")
             self.save_model(f'{os.path.join(path, str(epoch+1))}.ckpt')
+
+    def __get_teacher_ratio(self, start_tr, now_epoch, tot_epoch):
+        return start_tr - now_epoch * 0.35 / tot_epoch
+        # return start_tr 
 
     def save_model(self, filename):
         torch.save(self.model.module.state_dict(),
@@ -129,8 +134,8 @@ class Seq2SeqTrainer:
         self.model.train()
         # output: batch_size, title_len, dic_len
         outputs, preds = self.model(text, title, teacher_ratio)
-        outputs = outputs.reshape(-1, len(self.tokenizer))
-        title = title.reshape(-1)
+        outputs = outputs[:, :-1,:].reshape(-1, len(self.tokenizer))
+        title = title[:, 1:].reshape(-1)
         # print(outputs.shape, title.shape)
         loss = self.criterion(outputs, title).mean()
 
@@ -140,21 +145,6 @@ class Seq2SeqTrainer:
         self.optimizer.step()
 
         return loss.item(), preds
-
-    def evaluate(self, loader):
-        self.model.eval()
-        loss = 0
-
-        for i, batch in enumerate(tqdm(loader)):
-            text, title = batch
-            outputs, preds = self.model(text, title, 0)
-            # self.log.warning(preds.shape)
-            # outputs: target_size - 1, batch_size, dct_size
-            outputs = outputs[1:].view(-1, len(self.tokenizer))
-            title = title[1:].view(-1)  # [(target_size-1) * batch_size]
-            loss += criterion(outputs, title).item()
-
-        return loss / len(loader)
 
     def __filter_special_tokens(self, token_list):
         return [token for token in token_list if token not in self.tokenizer.all_special_tokens]
@@ -180,7 +170,7 @@ if __name__ == '__main__':
                              hidden_size=HIDDEN_SIZE,
                              n_layers=3,
                              lr=1e-4,
-                             dropout=0.5
+                             dropout=0.3
                              )
 
     trainer.train(train_loader=train_loader,
@@ -188,7 +178,7 @@ if __name__ == '__main__':
                   test_step=100,
                   test_batch_size=2,
                   epochs=40,
-                  teacher_ratio=0.5, 
+                  teacher_ratio=0.75,
                   save_ckpt_step=200)
 
     trainer.writer.close()

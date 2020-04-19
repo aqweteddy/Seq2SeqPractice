@@ -14,8 +14,13 @@ class BeamSearchNode(object):
         self.leng = length
 
     def eval(self, alpha=1.0):
-        reward = 0
+        if self.prevNode:
+            if self.prevNode.wordid == self.wordid:
+                reward = -1
+            else:
+                reward = 1
+        else:
+            reward = 0
         # Add here a function for shaping a reward
-
         return self.logp / float(self.leng - 1 + 1e-6) + alpha * reward
     
